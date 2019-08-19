@@ -8,18 +8,18 @@ import time
 import plotly
 import pandas as pd
 import plotly.graph_objs as go
-from dash.dependencies import Input, Output
+from dash.dependencies import Input, Output, State
+from dash.exceptions import PreventUpdate
 import dash_daq as daq
 taskQ = multiprocessing.Queue()
 resultQ = multiprocessing.Queue()
 global sp
 global r
 
-sp = serialProcess.SerialProcess(taskQ, resultQ)
-#external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
-mapbox_access_token = "pk.eyJ1IjoiamFja2x1byIsImEiOiJjajNlcnh3MzEwMHZtMzNueGw3NWw5ZXF5In0.fk8k06T96Ml9CLGgKmk81w"
-
-app = dash.Dash(__name__) #, external_stylesheets=external_stylesheets)
+logToFile = True
+sp = serialProcess.SerialProcess(taskQ, resultQ,logToFile)
+lastPower = -1
+app = dash.Dash(__name__)
 layout = dict(
     autosize=True,
     automargin=True,
@@ -33,22 +33,30 @@ layout = dict(
 
 app.layout = html.Div(children=[
     html.H1(children='Live lab monitor'),
-
-    html.Div(id='live-update-text',children='''
-        Dash: A web application framework for Python niet.
-    '''),
-
+    html.Div([
+    html.Div([
+    # html.P(id='live-update-text',children='''
+    #     Dash: A web application framework for Python niet.
+    # '''),
+    daq.Indicator(
+      id='serial-indicator',
+      value=True,
+      label="Serial: Yes",
+      color="#00cc96"
+    )
+        ], className="mini_container"),
+    ], className="row flex-display"),
     html.Div( [
         html.Div( [
 
 
             daq.Gauge(
                 id="gauge",
-                color={"gradient":True,"ranges":{"green":[0,20],"yellow":[20,40],"red":[40,50]}},
+                color={"gradient":True,"ranges":{"green":[-1,20],"yellow":[20,40],"red":[40,50]}},
                 value=2,
                 label='Power',
                 max=50,
-                min=0,
+                min=-1,
                 showCurrentValue=True,
                 units="W"
             ),
@@ -79,7 +87,7 @@ app.layout = html.Div(children=[
 
 
 
-def checkResults(lastestOnly=False):
+def checkResultsLog(lastestOnly=False):
     # try:
     try:
         df = pd.read_csv('log.txt')
@@ -91,51 +99,64 @@ def checkResults(lastestOnly=False):
         return None
     # except:
     #     print("No data yet")
-    result = -1
-    while not resultQ.empty():
-        result = resultQ.get()
-        print("tornado received from arduino: " + result)
-    return int(result)
 
+def checkResultsQueue(lastestOnly=True,lastResult=0):
+    if(not sp.is_alive()):
+        return None
+    if(lastestOnly):
+        while not resultQ.empty():
+            lastResult = resultQ.get()
+            print("Dash received from serial: " + lastResult)
+    return float(lastResult)
+
+@app.callback([Output('serial-indicator', 'value'),Output('serial-indicator', 'label'),Output('serial-indicator', 'color')],
+               [Input('interval-component', 'n_intervals')])
+def update_indicator(n):
+    global sp
+    alive = sp.is_alive()
+    if(not alive):
+        sp = serialProcess.SerialProcess(taskQ, resultQ, logToFile)
+        sp.daemon = True
+        sp.start()
+    return alive, 'Serial: Yes' if alive else 'Serial: No, attempting to restart','green' if alive else 'red'
 
 @app.callback(Output('gauge', 'value'),
-               [Input('example-graph', 'figure')])
-def update_gauge(n):
-    df = checkResults(lastestOnly=True)
-    try:
-        if "PW (ns)" in df.columns:
-            value = df['Power (W)'].iloc[-1]
-            print(value)
-            return value
-    except:
+               [Input('interval-component', 'n_intervals')],[State('gauge', 'value')])
+def update_gauge(n,lastValue):
+    result = checkResultsQueue(lastestOnly=True,lastResult=lastValue)
+    if(result == None):
+        #raise PreventUpdate
         return -1
-
-
-@app.callback(Output('live-update-text', 'children'),
-              [Input('interval-component', 'n_intervals')])
-def update_metrics(n):
-    global sp
-
-    lon, lat, alt = 1,2,4
-    style = {'padding': '5px', 'fontSize': '16px'}
-    if (sp.is_alive()):
-        return html.Span("Process is alive")
     else:
-        sp = serialProcess.SerialProcess(taskQ, resultQ)
-        # sp.daemon = True
-        sp.start()
-        return html.Span("Process is dead, restarting...")
-    # return [
-    #     html.Span('Longitude: {0:.2f}'.format(lon), style=style),
-    #     html.Span('Latitude: {0:.2f}'.format(lat), style=style),
-    #     html.Span('Altitude: {0:0.2f}'.format(alt), style=style)
-    # ]
+        return result
+
+
+#
+# # @app.callback(Output('live-update-text', 'children'),
+# #               [Input('interval-component', 'n_intervals')])
+# def update_metrics(n):
+#     global sp
+#
+#     lon, lat, alt = 1,2,4
+#     style = {'padding': '5px', 'fontSize': '16px'}
+#     if (sp.is_alive()):
+#         return html.Span("Process is alive")
+#     else:
+#         sp = serialProcess.SerialProcess(taskQ, resultQ,logToFile)
+#         # sp.daemon = True
+#         #sp.start()
+#         return html.Span("Process is dead, restarting...")
+#     # return [
+#     #     html.Span('Longitude: {0:.2f}'.format(lon), style=style),
+#     #     html.Span('Latitude: {0:.2f}'.format(lat), style=style),
+#     #     html.Span('Altitude: {0:0.2f}'.format(alt), style=style)
+#     # ]
 
 @app.callback(Output('example-graph', 'figure'),
               [Input('interval-component', 'n_intervals')])
 def update_graph_live(n):
 
-    r = checkResults()
+    r = checkResultsLog()
 
     colors = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf']
     # if r == -1:
@@ -158,7 +179,7 @@ def update_graph_live(n):
         ]
     layout_new = {
         'title': 'Live power and pulsewidth',
-        'yaxis': {'title': 'Powerr (W)', 'side': 'left','titlefont':{'color':colors[0]},'tickfont':{'color':colors[0]}},
+        'yaxis': {'title': 'Power (W)', 'side': 'left','titlefont':{'color':colors[0]},'tickfont':{'color':colors[0]}},
         'yaxis2': {'title': 'Pulsewidth (ns)','side':'right','overlaying':'y','titlefont':{'color':colors[1]},'tickfont':{'color':colors[1]}},
         'uirevision': 2
     }
@@ -183,4 +204,4 @@ if __name__ == '__main__':
     sp.start()
     taskQ.put("first task")
     taskQ.put("second task")
-    app.run_server(debug=True)
+    app.run_server(debug=False)
